@@ -23,6 +23,7 @@ class FileImportController extends Controller
     // Блок 1: Принять файл и отправить в очередь
     public function upload(Request $request)
     {
+        // 1. Базовая валидация на тип файла и размер
         $request->validate([
             // Увеличили лимит до 51200 КБ (50 МБ)
             'file' => 'required|file|mimes:xlsx,xls|max:51200',
@@ -30,6 +31,18 @@ class FileImportController extends Controller
 
         $uploadedFile = $request->file('file');
         $originalName = $uploadedFile->getClientOriginalName();
+
+        // 2. ПРОВЕРКА НА ПОВТОРНУЮ ЗАГРУЗКУ: Ищем файл с таким же именем в БД
+        $fileExists = File::where('original_name', $originalName)->exists();
+
+        if ($fileExists) {
+            // Возвращаем ошибку валидации, которая автоматически отобразится под инпутом во Vue
+            return redirect()->back()->withErrors([
+                'file' => 'Файл с именем "' . $originalName . '" уже был загружен ранее. Удалите старую таблицу перед повторным импортом.'
+            ]);
+        }
+
+        // 3. Если файла нет, продолжаем стандартный процесс
         $tableName = 'import_' . Str::random(8) . '_' . time();
         $path = $uploadedFile->store('imports');
 
