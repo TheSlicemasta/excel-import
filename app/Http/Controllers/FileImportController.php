@@ -43,7 +43,12 @@ class FileImportController extends Controller
         }
 
         // 3. Если файла нет, продолжаем стандартный процесс
-        $tableName = 'import_' . Str::random(8) . '_' . time();
+
+        // Имя таблицы из оригинального названия файлы - нормализуем, удаляем расширение, приводим к нижнему регистру
+        $fileNameWithoutExtension = pathinfo($originalName, PATHINFO_FILENAME);
+        $safeName = Str::slug($fileNameWithoutExtension, '_');
+        $tableName = 'import_file_' . $safeName . '_' . time();
+
         $path = $uploadedFile->store('imports');
 
         $fileRecord = File::create([
