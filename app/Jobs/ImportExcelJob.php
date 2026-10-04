@@ -9,6 +9,7 @@ use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\DB;
 use App\Models\File;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 use Illuminate\Support\Facades\Log;
 
 class ImportExcelJob implements ShouldQueue
@@ -30,7 +31,6 @@ class ImportExcelJob implements ShouldQueue
         $tableName = $fileRecord->table_name;
         $absolutePath = Storage::path($this->filePath);
 
-        // Повышаем лимит памяти для самого воркера на время выполнения тяжелого импорта
         ini_set('memory_limit', '512M');
 
         $zip = new \ZipArchive;
@@ -40,7 +40,7 @@ class ImportExcelJob implements ShouldQueue
         }
 
         try {
-            // 1. Извлекаем словарь общих строк во временный файл для потокового чтения
+            // 1. Извлекаем словарь общих строк
             $sharedStrings = [];
             $stringsEntry = $zip->getFromName('xl/sharedStrings.xml');
             if ($stringsEntry) {
@@ -51,40 +51,36 @@ class ImportExcelJob implements ShouldQueue
                 unset($xml, $stringsEntry);
             }
 
-            // 2. Достаем XML первого листа и сохраняем на диск для XMLReader
+            // 2. Достаем XML первого листа
             $sheetXmlPath = storage_path('app/private/' . $tableName . '_sheet.xml');
             file_put_contents($sheetXmlPath, $zip->getFromName('xl/worksheets/sheet1.xml'));
             $zip->close();
 
-            // 3. Начинаем потоковое чтение через XMLReader (тратит минимум памяти)
+            // 3. Потоковое чтение
             $reader = new \XMLReader;
             if (!$reader->open($sheetXmlPath)) {
                 throw new \Exception("Не удалось открыть XML-поток листа");
             }
 
-            $headers = [];
+            $headers = [];        // Оригинальные имена из файла для сохранения в метаданные
+            $dbColumns = [];      // Безопасные имена для MySQL (очищенные от точек/дефисов)
             $insertBatch = [];
             $isTableCreated = false;
             $currentRowData = [];
-            $currentColIndex = 0;
 
             while ($reader->read()) {
-                // Если зашли в тег строки <row>
                 if ($reader->nodeType == \XMLReader::ELEMENT && $reader->name === 'row') {
                     $currentRowData = [];
                 }
 
-                // Если зашли в тег ячейки <c>
                 if ($reader->nodeType == \XMLReader::ELEMENT && $reader->name === 'c') {
                     $cellType = $reader->getAttribute('t');
                     $coordinate = $reader->getAttribute('r');
 
-                    // Высчитываем точный индекс колонки по букве (A=0, B=1, Z=25...)
                     preg_match('/^[A-Z]+/', $coordinate, $matches);
                     $colLetter = $matches[0] ?? 'A';
                     $currentColIndex = $this->coordinateToColumnIndex($colLetter);
 
-                    // Читаем значение внутри <v>
                     $cellValue = '';
                     while ($reader->read()) {
                         if ($reader->nodeType == \XMLReader::ELEMENT && $reader->name === 'v') {
@@ -96,53 +92,70 @@ class ImportExcelJob implements ShouldQueue
                         }
                     }
 
-                    // Если это строка из словаря
                     if ($cellType === 's') {
                         $cellValue = $sharedStrings[(int)$cellValue] ?? '';
                     }
 
-                    $currentRowData[$currentColIndex] = $cellValue;
+                    $currentRowData[$currentColIndex] = trim($cellValue);
                 }
 
-                // Когда тег строки закрывается </row>
                 if ($reader->nodeType == \XMLReader::END_ELEMENT && $reader->name === 'row') {
                     if (empty($currentRowData)) continue;
 
-                    // Если это самая первая заполненная строка — это заголовки
+                    // Если это первая строка — формируем структуру 1 в 1
                     if (empty($headers)) {
                         $headers = $currentRowData;
-                        // Заполняем пропуски в заголовках, если они есть
                         $maxHeaderIndex = max(array_keys($headers));
+
+                        // Формируем чистые имена колонок для MySQL
                         for ($i = 0; $i <= $maxHeaderIndex; $i++) {
-                            if (!isset($headers[$i]) || $headers[$i] === '') {
-                                $headers[$i] = 'Колонка ' . ($i + 1);
+                            $rawName = isset($headers[$i]) ? trim($headers[$i]) : '';
+
+                            if ($rawName === '') {
+                                $rawName = 'column_' . ($i + 1);
                             }
+
+                            // Сохраняем знак "#", буквы, цифры, а пробелы, дефисы и точки меняем на "_"
+                            // Приводим к нижнему регистру для стандартизации MySQL
+                            $safeColName = preg_replace('/[.\s-]+/', '_', mb_strtolower($rawName));
+
+                            // На всякий случай чистим крайние подчеркивания
+                            $safeColName = trim($safeColName, '_');
+
+                            // Если после очистки имя вышло пустым, даем дефолтное
+                            if ($safeColName === '') {
+                                $safeColName = 'column_' . ($i + 1);
+                            }
+
+                            $dbColumns[$i] = $safeColName;
                         }
 
-                        $fileRecord->update(['headers' => $headers]);
+                        // Записываем очищенные имена колонок в метаданные файла для фронтенда
+                        $fileRecord->update(['headers' => $dbColumns]);
 
-                        // Создаем динамическую таблицу в MySQL
-                        Schema::create($tableName, function (Blueprint $table) use ($headers) {
-                            $table->id();
-                            foreach (array_keys($headers) as $index) {
-                                $table->text('col_' . $index)->nullable();
+                        // Создаем динамическую таблицу БЕЗ автоинкремента id и timestamps
+                        Schema::create($tableName, function (Blueprint $table) use ($dbColumns) {
+                            foreach ($dbColumns as $colName) {
+                                $table->text($colName)->nullable();
                             }
-                            $table->timestamps();
                         });
+
                         $isTableCreated = true;
-                        continue; // Переходим к следующей строке (данным)
+                        continue;
                     }
 
-                    // Наполнение массива для вставки данных
+                    // Наполнение массива данными
                     $rowData = [];
-                    foreach (array_keys($headers) as $index) {
-                        $rowData['col_' . $index] = $currentRowData[$index] ?? null;
+                    foreach (array_keys($dbColumns) as $index) {
+                        $colName = $dbColumns[$index];
+                        $rawValue = $currentRowData[$index] ?? null;
+
+                        // Конвертируем дату Excel, если она попала в поле времени
+                        $rowData[$colName] = $this->transformExcelDate($rawValue);
                     }
-                    $rowData['created_at'] = now();
-                    $rowData['updated_at'] = now();
+
                     $insertBatch[] = $rowData;
 
-                    // Вставляем пачками по 500 строк, чтобы разгрузить буфер инсертов
                     if (count($insertBatch) >= 500) {
                         DB::table($tableName)->insert($insertBatch);
                         $insertBatch = [];
@@ -150,28 +163,41 @@ class ImportExcelJob implements ShouldQueue
                 }
             }
 
-            // Дозаписываем остатки пачки
             if (!empty($insertBatch) && $isTableCreated) {
                 DB::table($tableName)->insert($insertBatch);
             }
 
             $reader->close();
-            @unlink($sheetXmlPath); // Чистим за собой временный файл
+            @unlink($sheetXmlPath);
 
-            // Успех!
             $fileRecord->update(['status' => 'completed']);
             Storage::delete($this->filePath);
         } catch (\Throwable $e) {
             Log::error('Excel Stream Import Error: ' . $e->getMessage());
-            Log::error($e->getTraceAsString());
-
             $fileRecord->update(['status' => 'failed']);
-            if (isset($sheetXmlPath)) {
-                @unlink($sheetXmlPath);
-            }
+            if (isset($sheetXmlPath)) @unlink($sheetXmlPath);
             Schema::dropIfExists($tableName);
             Storage::delete($this->filePath);
         }
+    }
+
+    private function transformExcelDate($value)
+    {
+        if (is_numeric($value) && $value > 40000 && $value < 60000) {
+            try {
+                $utcDays = floor($value) - 2;
+                $fraction = $value - floor($value);
+                $seconds = round($fraction * 86400);
+
+                return \Illuminate\Support\Carbon::create(1900, 1, 1, 0, 0, 0)
+                    ->addDays($utcDays)
+                    ->addSeconds($seconds)
+                    ->toDateTimeString();
+            } catch (\Throwable $e) {
+                return $value;
+            }
+        }
+        return $value;
     }
 
     private function coordinateToColumnIndex(string $letter): int

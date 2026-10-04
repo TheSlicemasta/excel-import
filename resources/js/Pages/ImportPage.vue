@@ -386,18 +386,17 @@ const isPageVisible = (label) => {
                             </td>
                         </tr>
                         <tr
-                            v-for="row in tableRows"
-                            :key="row.id"
+                            v-for="(row, rowIndex) in tableRows"
+                            :key="rowIndex"
                             class="hover:bg-gray-50"
                         >
-                            <!-- Выводим ячейки строго по ключу col_индекс, сопоставляя с заголовком -->
                             <td
-                                v-for="(headerName, index) in tableHeaders"
-                                :key="index"
+                                v-for="columnName in tableHeaders"
+                                :key="columnName"
                                 class="p-3 border-r border-gray-100 max-w-xs truncate"
-                                :title="row['col_' + index]"
+                                :title="row[columnName]"
                             >
-                                {{ row["col_" + index] }}
+                                {{ row[columnName] }}
                             </td>
                         </tr>
                     </tbody>
