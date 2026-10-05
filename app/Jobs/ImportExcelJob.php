@@ -62,8 +62,7 @@ class ImportExcelJob implements ShouldQueue
                 throw new \Exception("Не удалось открыть XML-поток листа");
             }
 
-            $headers = [];        // Оригинальные имена из файла для сохранения в метаданные
-            $dbColumns = [];      // Безопасные имена для MySQL (очищенные от точек/дефисов)
+            $headers = [];
             $insertBatch = [];
             $isTableCreated = false;
             $currentRowData = [];
@@ -102,52 +101,29 @@ class ImportExcelJob implements ShouldQueue
                 if ($reader->nodeType == \XMLReader::END_ELEMENT && $reader->name === 'row') {
                     if (empty($currentRowData)) continue;
 
-                    // Если это первая строка — формируем структуру 1 в 1
+                    // Если это первая строка — формируем структуру
                     if (empty($headers)) {
-                        $headers = $currentRowData;
-                        $maxHeaderIndex = max(array_keys($headers));
+                        $maxHeaderIndex = max(array_keys($currentRowData));
 
                         // Формируем чистые имена колонок для MySQL
                         for ($i = 0; $i <= $maxHeaderIndex; $i++) {
-                            $rawName = isset($headers[$i]) ? trim($headers[$i]) : '';
-
-                            if ($rawName === '') {
-                                $rawName = 'column_' . ($i + 1);
-                            }
-
-                            // Сохраняем знак "#", буквы, цифры, а пробелы, дефисы и точки меняем на "_"
-                            // Приводим к нижнему регистру для стандартизации MySQL
-                            $safeColName = preg_replace('/[.\s-]+/', '_', mb_strtolower($rawName));
-
-                            // На всякий случай чистим крайние подчеркивания
-                            $safeColName = trim($safeColName, '_');
-
-                            // Если после очистки имя вышло пустым, даем дефолтное
-                            if ($safeColName === '') {
-                                $safeColName = 'column_' . ($i + 1);
-                            }
-
-                            $dbColumns[$i] = $safeColName;
+                            $headers[$i] = 'col_' . ($i + 1);
                         }
 
-                        // Записываем очищенные имена колонок в метаданные файла для фронтенда
-                        $fileRecord->update(['headers' => $dbColumns]);
-
                         // Создаем динамическую таблицу БЕЗ автоинкремента id и timestamps
-                        Schema::create($tableName, function (Blueprint $table) use ($dbColumns) {
-                            foreach ($dbColumns as $colName) {
+                        Schema::create($tableName, function (Blueprint $table) use ($headers) {
+                            foreach ($headers as $colName) {
                                 $table->text($colName)->nullable();
                             }
                         });
 
                         $isTableCreated = true;
-                        continue;
                     }
 
                     // Наполнение массива данными
                     $rowData = [];
-                    foreach (array_keys($dbColumns) as $index) {
-                        $colName = $dbColumns[$index];
+                    foreach (array_keys($headers) as $index) {
+                        $colName = $headers[$index];
                         $rawValue = $currentRowData[$index] ?? null;
 
                         // Конвертируем дату Excel, если она попала в поле времени

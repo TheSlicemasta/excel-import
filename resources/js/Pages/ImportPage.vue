@@ -125,9 +125,6 @@ const selectFile = (file) => {
     fetchTableData(1);
 };
 
-// Добавляем реактивную переменную для заголовков
-const tableHeaders = ref([]);
-
 // Действие 3: Асинхронное получение строк таблицы с пагинацией через Axios
 const fetchTableData = async (page = 1) => {
     if (!activeFile.value) {
@@ -147,7 +144,6 @@ const fetchTableData = async (page = 1) => {
 
         // Перезаписываем состояния из нового формата ответа
         tableRows.value = response.data.rows;
-        tableHeaders.value = response.data.headers; // Сохраняем оригинальные заголовки
 
         pagination.value = {
             current_page: response.data.current_page,
@@ -360,28 +356,11 @@ const isPageVisible = (label) => {
                 <table
                     class="w-full text-left border-collapse divide-y divide-gray-200"
                 >
-                    <thead>
-                        <tr
-                            class="bg-gray-50 text-xs font-semibold text-gray-700 uppercase"
-                        >
-                            <!-- Выводим РЕАЛЬНЫЕ названия колонок из Excel -->
-                            <th
-                                v-for="(headerName, index) in tableHeaders"
-                                :key="index"
-                                class="p-3 border-r border-gray-200"
-                            >
-                                {{ headerName }}
-                            </th>
-                        </tr>
-                    </thead>
                     <tbody
                         class="divide-y divide-gray-200 text-xs text-gray-600 bg-white"
                     >
                         <tr v-if="tableRows.length === 0">
-                            <td
-                                :colspan="tableHeaders.length"
-                                class="p-4 text-center text-gray-500"
-                            >
+                            <td class="p-4 text-center text-gray-500">
                                 В этой таблице нет записей.
                             </td>
                         </tr>
@@ -391,12 +370,14 @@ const isPageVisible = (label) => {
                             class="hover:bg-gray-50"
                         >
                             <td
-                                v-for="columnName in tableHeaders"
-                                :key="columnName"
+                                v-for="(columnName, colIndex) in row"
+                                :key="colIndex"
                                 class="p-3 border-r border-gray-100 max-w-xs truncate"
                                 :title="row[columnName]"
                             >
-                                {{ row[columnName] }}
+                                <!-- {{ row[columnName] }} -->
+                                <!-- {{ Object.values(row)[colIndex] }} -->
+                                {{ columnName }}
                             </td>
                         </tr>
                     </tbody>
