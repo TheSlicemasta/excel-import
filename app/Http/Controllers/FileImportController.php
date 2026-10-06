@@ -78,7 +78,7 @@ class FileImportController extends Controller
         // Возвращаем данные, подмешивая массив сохраненных заголовков
         return response()->json([
             'rows' => $paginatedData->items(),
-            'headers' => $file->headers ?? [], // Передаем оригинальные названия колонок
+            // 'headers' => $file->headers ?? [], // Передаем оригинальные названия колонок
             'current_page' => $paginatedData->currentPage(),
             'last_page' => $paginatedData->lastPage(),
             'links' => $paginatedData->linkCollection()->toArray(),
